@@ -2,7 +2,7 @@ name: Build For macOS
 
 on:
   push:
-    # branches: [master]
+    branches: [main]
     tags:
       - '*'
 
