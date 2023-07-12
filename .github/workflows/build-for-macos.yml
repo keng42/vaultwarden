@@ -2,7 +2,7 @@ name: Build For macOS
 
 on:
   push:
-    branches: [main]
+    # branches: [main]
     tags:
       - '*'
 
@@ -13,6 +13,8 @@ jobs:
         os: [macos-latest]
 
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
     - uses: actions/checkout@v2
     - name: Get version
