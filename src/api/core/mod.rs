@@ -8,6 +8,7 @@ mod public;
 mod sends;
 pub mod two_factor;
 
+pub use accounts::purge_auth_requests;
 pub use ciphers::{purge_trashed_ciphers, CipherData, CipherSyncData, CipherSyncType};
 pub use emergency_access::{emergency_notification_reminder_job, emergency_request_timeout_job};
 pub use events::{event_cleanup_job, log_event, log_user_event};
@@ -193,11 +194,17 @@ fn version() -> Json<&'static str> {
 fn config() -> Json<Value> {
     let domain = crate::CONFIG.domain();
     Json(json!({
-        "version": crate::VERSION,
+        // Note: The clients use this version to handle backwards compatibility concerns
+        // This means they expect a version that closely matches the Bitwarden server version
+        // We should make sure that we keep this updated when we support the new server features
+        // Version history:
+        // - Individual cipher key encryption: 2023.9.1
+        "version": "2023.9.1",
         "gitHash": option_env!("GIT_REV"),
         "server": {
           "name": "Vaultwarden",
-          "url": "https://github.com/dani-garcia/vaultwarden"
+          "url": "https://github.com/dani-garcia/vaultwarden",
+          "version": crate::VERSION
         },
         "environment": {
           "vault": domain,
@@ -205,6 +212,13 @@ fn config() -> Json<Value> {
           "identity": format!("{domain}/identity"),
           "notifications": format!("{domain}/notifications"),
           "sso": "",
+        },
+        "featureStates": {
+          // Any feature flags that we want the clients to use
+          // Can check the enabled ones at:
+          // https://vault.bitwarden.com/api/config
+          "fido2-vault-credentials": true,  // Passkey support
+          "autofill-v2": false,             // Disabled because it is causing issues https://github.com/dani-garcia/vaultwarden/discussions/4052
         },
         "object": "config",
     }))

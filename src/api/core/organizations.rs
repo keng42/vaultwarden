@@ -6,8 +6,7 @@ use serde_json::Value;
 use crate::{
     api::{
         core::{log_event, CipherSyncData, CipherSyncType},
-        ApiResult, EmptyResult, JsonResult, JsonUpcase, JsonUpcaseVec, JsonVec, Notify, NumberOrString, PasswordData,
-        UpdateType,
+        EmptyResult, JsonResult, JsonUpcase, JsonUpcaseVec, JsonVec, Notify, NumberOrString, PasswordData, UpdateType,
     },
     auth::{decode_invite, AdminHeaders, Headers, ManagerHeaders, ManagerHeadersLoose, OwnerHeaders},
     db::{models::*, DbConn},
@@ -61,6 +60,7 @@ pub fn routes() -> Vec<Route> {
         put_policy,
         get_organization_tax,
         get_plans,
+        get_plans_all,
         get_plans_tax_rates,
         import,
         post_org_keys,
@@ -468,7 +468,11 @@ async fn post_organization_collection_update(
     }
 
     collection.name = data.Name;
-    collection.external_id = data.ExternalId;
+    collection.external_id = match data.ExternalId {
+        Some(external_id) if !external_id.trim().is_empty() => Some(external_id),
+        _ => None,
+    };
+
     collection.save(&mut conn).await?;
 
     log_event(
@@ -1516,9 +1520,9 @@ async fn bulk_public_keys(
     let data: OrgBulkIds = data.into_inner().data;
 
     let mut bulk_response = Vec::new();
-    // Check all received UserOrg UUID's and find the matching User to retreive the public-key.
+    // Check all received UserOrg UUID's and find the matching User to retrieve the public-key.
     // If the user does not exists, just ignore it, and do not return any information regarding that UserOrg UUID.
-    // The web-vault will then ignore that user for the folowing steps.
+    // The web-vault will then ignore that user for the following steps.
     for user_org_id in data.Ids {
         match UserOrganization::find_by_uuid_and_org(&user_org_id, org_id, &mut conn).await {
             Some(user_org) => match User::find_by_uuid(&user_org.user_uuid, &mut conn).await {
@@ -1807,10 +1811,26 @@ fn get_plans() -> Json<Value> {
             "Product": 0,
             "Name": "Free",
             "NameLocalizationKey": "planNameFree",
+            "BitwardenProduct": 0,
+            "MaxUsers": 0,
+            "DescriptionLocalizationKey": "planDescFree"
+        },{
+            "Object": "plan",
+            "Type": 0,
+            "Product": 1,
+            "Name": "Free",
+            "NameLocalizationKey": "planNameFree",
+            "BitwardenProduct": 1,
+            "MaxUsers": 0,
             "DescriptionLocalizationKey": "planDescFree"
         }],
         "ContinuationToken": null
     }))
+}
+
+#[get("/plans/all")]
+fn get_plans_all() -> Json<Value> {
+    get_plans()
 }
 
 #[get("/plans/sales-tax-rates")]
@@ -1862,7 +1882,7 @@ async fn import(org_id: &str, data: JsonUpcase<OrgImportData>, headers: Headers,
     // This means that this endpoint can end up removing users that were added manually by an admin,
     // as opposed to upstream which only removes auto-imported users.
 
-    // User needs to be admin or owner to use the Directry Connector
+    // User needs to be admin or owner to use the Directory Connector
     match UserOrganization::find_by_user_and_org(&headers.user.uuid, org_id, &mut conn).await {
         Some(user_org) if user_org.atype >= UserOrgType::Admin => { /* Okay, nothing to do */ }
         Some(_) => err!("User has insufficient permissions to use Directory Connector"),
@@ -2222,29 +2242,22 @@ struct GroupRequest {
 }
 
 impl GroupRequest {
-    pub fn to_group(&self, organizations_uuid: &str) -> ApiResult<Group> {
-        match self.AccessAll {
-            Some(access_all_value) => Ok(Group::new(
-                organizations_uuid.to_owned(),
-                self.Name.clone(),
-                access_all_value,
-                self.ExternalId.clone(),
-            )),
-            _ => err!("Could not convert GroupRequest to Group, because AccessAll has no value!"),
-        }
+    pub fn to_group(&self, organizations_uuid: &str) -> Group {
+        Group::new(
+            String::from(organizations_uuid),
+            self.Name.clone(),
+            self.AccessAll.unwrap_or(false),
+            self.ExternalId.clone(),
+        )
     }
 
-    pub fn update_group(&self, mut group: Group) -> ApiResult<Group> {
-        match self.AccessAll {
-            Some(access_all_value) => {
-                group.name = self.Name.clone();
-                group.access_all = access_all_value;
-                group.set_external_id(self.ExternalId.clone());
+    pub fn update_group(&self, mut group: Group) -> Group {
+        group.name = self.Name.clone();
+        group.access_all = self.AccessAll.unwrap_or(false);
+        // Group Updates do not support changing the external_id
+        // These input fields are in a disabled state, and can only be updated/added via ldap_import
 
-                Ok(group)
-            }
-            _ => err!("Could not update group, because AccessAll has no value!"),
-        }
+        group
     }
 }
 
@@ -2305,7 +2318,7 @@ async fn post_groups(
     }
 
     let group_request = data.into_inner().data;
-    let group = group_request.to_group(org_id)?;
+    let group = group_request.to_group(org_id);
 
     log_event(
         EventType::GroupCreated as i32,
@@ -2339,7 +2352,7 @@ async fn put_group(
     };
 
     let group_request = data.into_inner().data;
-    let updated_group = group_request.update_group(group)?;
+    let updated_group = group_request.update_group(group);
 
     CollectionGroup::delete_all_by_group(group_id, &mut conn).await?;
     GroupUser::delete_all_by_group(group_id, &mut conn).await?;
@@ -2884,7 +2897,7 @@ async fn put_reset_password_enrollment(
 
 // This is a new function active since the v2022.9.x clients.
 // It combines the previous two calls done before.
-// We call those two functions here and combine them our selfs.
+// We call those two functions here and combine them ourselves.
 //
 // NOTE: It seems clients can't handle uppercase-first keys!!
 //       We need to convert all keys so they have the first character to be a lowercase.
