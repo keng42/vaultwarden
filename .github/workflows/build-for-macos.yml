@@ -1,0 +1,47 @@
+name: Build For macOS
+
+on:
+  push:
+    # branches: [main]
+    tags:
+      - '*'
+
+jobs:
+  release:
+    strategy:
+      matrix:
+        os: [macos-latest]
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v2
+    - name: Get version
+      id: get_version
+      run: echo ::set-output name=version::${GITHUB_REF/refs\/tags\//}
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+
+    - name: Build
+      run: cargo build --release --features sqlite
+
+    - name: Set SHA
+      if: matrix.os == 'macos-latest'
+      id: shasum
+      run: |
+        echo ::set-output name=sha::"$(shasum -a 256 ./target/release/vaultwarden | awk '{printf $1}')"
+   
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        body: ${{ steps.release_notes.outputs.release_notes }}
+        prerelease: false
+        files: |
+          ./target/release/vaultwarden
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
