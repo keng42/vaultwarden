@@ -54,10 +54,11 @@ jobs:
           tar -czf "vaultwarden-${TAG}-macos-arm64.tar.gz" vaultwarden-macos-arm64 SHA256SUMS
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: true
-          files: |
-            ./dist/vaultwarden-macos-arm64
-            ./dist/SHA256SUMS
-            ./dist/vaultwarden-${{ github.ref_name }}-macos-arm64.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            ./dist/vaultwarden-macos-arm64 \
+            ./dist/SHA256SUMS \
+            ./dist/vaultwarden-${{ github.ref_name }}-macos-arm64.tar.gz \
+            --generate-notes
