@@ -1,0 +1,63 @@
+name: Build for macOS arm64
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Show build environment
+        run: |
+          uname -m
+          sw_vers
+          rustc --version || true
+          cargo --version || true
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Build Vaultwarden
+        run: |
+          cargo build --locked --release --features sqlite
+
+      - name: Verify binary
+        run: |
+          file ./target/release/vaultwarden
+          ./target/release/vaultwarden --version || true
+
+      - name: Package release artifact
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          cp ./target/release/vaultwarden ./dist/vaultwarden-macos-arm64
+          chmod +x ./dist/vaultwarden-macos-arm64
+
+          cd dist
+          shasum -a 256 vaultwarden-macos-arm64 > SHA256SUMS
+          tar -czf "vaultwarden-${TAG}-macos-arm64.tar.gz" vaultwarden-macos-arm64 SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: |
+            ./dist/vaultwarden-macos-arm64
+            ./dist/SHA256SUMS
+            ./dist/vaultwarden-${{ github.ref_name }}-macos-arm64.tar.gz
