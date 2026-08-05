@@ -1,0 +1,169 @@
+name: Build Vaultwarden for macOS arm64
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET: aarch64-apple-darwin
+  BIN_NAME: vaultwarden
+  ASSET_NAME: vaultwarden-macos-arm64
+
+jobs:
+  release:
+    name: Build and release macOS arm64 binary
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Architecture: $(uname -m)"
+          sw_vers
+          test "$(uname -m)" = "arm64" || {
+            echo "::error::Expected Apple Silicon arm64 runner, got $(uname -m)"
+            exit 1
+          }
+      - name: Show pinned Rust toolchain configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f rust-toolchain.toml ]]; then
+            echo "::error::rust-toolchain.toml not found. Refusing to build with an unpinned Rust toolchain."
+            exit 1
+          fi
+          cat rust-toolchain.toml
+          # Cargo/rustup will honor the repository's rust-toolchain.toml.
+          rustup show active-toolchain
+          rustc --version --verbose
+          cargo --version --verbose
+      - name: Verify required Vaultwarden features exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Eq '^sqlite[[:space:]]*=' Cargo.toml || {
+            echo "::error::Cargo feature 'sqlite' not found."
+            exit 1
+          }
+          grep -Eq '^vendored_openssl[[:space:]]*=' Cargo.toml || {
+            echo "::error::Cargo feature 'vendored_openssl' not found."
+            exit 1
+          }
+      - name: Build portable Vaultwarden binary
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          rustup target add "${TARGET}"
+          cargo build \
+            --locked \
+            --release \
+            --target "${TARGET}" \
+            --no-default-features \
+            --features "sqlite,vendored_openssl"
+      - name: Verify binary architecture and dynamic dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="./target/${TARGET}/release/${BIN_NAME}"
+          test -x "${BIN}" || {
+            echo "::error::Built binary not found or not executable: ${BIN}"
+            exit 1
+          }
+          echo "== file =="
+          file "${BIN}"
+          file "${BIN}" | grep -q 'arm64' || {
+            echo "::error::Binary is not arm64."
+            exit 1
+          }
+          echo "== otool -L =="
+          otool -L "${BIN}" | tee dynamic-libraries.txt
+          # OpenSSL and SQLite must be embedded; they must not remain dylib dependencies.
+          if grep -Ei 'libssl|libcrypto|libsqlite3' dynamic-libraries.txt; then
+            echo "::error::Binary still dynamically links OpenSSL or SQLite."
+            exit 1
+          fi
+          # A portable standalone build may link macOS system libraries only.
+          while IFS= read -r dep; do
+            case "${dep}" in
+              /usr/lib/*|/System/Library/*)
+                ;;
+              *)
+                echo "::error::Unexpected non-system dynamic dependency: ${dep}"
+                exit 1
+                ;;
+            esac
+          done < <(otool -L "${BIN}" | tail -n +2 | awk '{print $1}')
+          # Explicitly prevent repeating today's Homebrew-linked build mistake.
+          if grep -E '/opt/homebrew|/usr/local/opt|Cellar' dynamic-libraries.txt; then
+            echo "::error::Binary contains a Homebrew dependency."
+            exit 1
+          fi
+      - name: Smoke test binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="./target/${TARGET}/release/${BIN_NAME}"
+          "${BIN}" --version
+      - name: Package release artifacts
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          BIN="./target/${TARGET}/release/${BIN_NAME}"
+          DIST="./dist"
+          ARCHIVE="vaultwarden-${TAG}-macos-arm64.tar.gz"
+          rm -rf "${DIST}"
+          mkdir -p "${DIST}"
+          cp "${BIN}" "${DIST}/${ASSET_NAME}"
+          chmod 755 "${DIST}/${ASSET_NAME}"
+          (
+            cd "${DIST}"
+            shasum -a 256 "${ASSET_NAME}" > SHA256SUMS
+            tar -czf "${ARCHIVE}" "${ASSET_NAME}" SHA256SUMS
+            shasum -a 256 "${ARCHIVE}" >> SHA256SUMS
+          )
+          echo "== Artifacts =="
+          ls -lh "${DIST}"
+          cat "${DIST}/SHA256SUMS"
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ASSETS=(
+            "./dist/${ASSET_NAME}"
+            "./dist/SHA256SUMS"
+            "./dist/vaultwarden-${TAG}-macos-arm64.tar.gz"
+          )
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; replacing assets."
+            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
+          else
+            echo "Creating release ${TAG}."
+            gh release create "${TAG}" \
+              "${ASSETS[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${TAG}"
+          fi
